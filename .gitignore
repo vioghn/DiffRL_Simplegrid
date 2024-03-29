@@ -23,3 +23,5 @@ scripts/sweeps/
 scripts/outputs
 scripts/runs/
 good-shit
+
+**.DS_Store
