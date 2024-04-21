@@ -128,10 +128,6 @@ class DFlexEnv:
         pass
 
     @abstractmethod
-    def compute_termination(self, obs, act):
-        pass
-
-    @abstractmethod
     def calculate_reward(self, obs, act):
         pass
 
@@ -142,6 +138,11 @@ class DFlexEnv:
     @abstractmethod
     def stochastic_init_func(self, env_ids):
         pass
+
+    def compute_termination(self, obs, act):
+        # Never terminate; needs to be overriden if we need termination
+        termination = torch.zeros(self.num_envs, dtype=torch.bool, device=self.device)
+        return termination
 
     def step(self, actions, play=False):
         actions = actions.view((self.num_envs, self.num_actions))

@@ -39,18 +39,15 @@ class CartPoleSwingUpEnv(DFlexEnv):
         render=False,
         device="cuda:0",
         num_envs=1024,
-        seed=0,
         episode_length=240,
         no_grad=True,
         stochastic_init=False,
         MM_caching_frequency=1,
-        early_termination=False,
         jacobian=False,
         start_state=[0.0, 0.0, 0.0, 0.0],
         logdir=None,
         nan_state_fix=False,
         jacobian_norm=None,
-        reset_all=False,
     ):
         num_obs = 5
         num_act = 1
@@ -61,22 +58,19 @@ class CartPoleSwingUpEnv(DFlexEnv):
             num_act,
             episode_length,
             MM_caching_frequency,
-            seed,
             no_grad,
             render,
             nan_state_fix,
             jacobian_norm,
-            reset_all,
             stochastic_init,
             jacobian,
             device,
         )
 
+        self.early_termination=False
         self.start_state = np.array(start_state)
         assert self.start_state.shape[0] == 4, self.start_state
 
-        self.stochastic_init = stochastic_init
-        self.early_termination = early_termination
         self.init_sim()
 
         # action parameters
@@ -147,164 +141,71 @@ class CartPoleSwingUpEnv(DFlexEnv):
         self.start_joint_q = self.state.joint_q.clone()
         self.start_joint_qd = self.state.joint_qd.clone()
 
-    # Now inherited from class above
-    # def render(self, mode="human"):
-    #     if self.visualize:
-    #         self.render_time += self.dt
-    #         self.renderer.update(self.state, self.render_time)
-    #         if self.num_frames == 40:
-    #             try:
-    #                 self.stage.Save()
-    #             except:
-    #                 print("USD save error")
-    #             self.num_frames -= 40
 
-    def step(self, actions):
-        with df.ScopedTimer("simulate", active=False, detailed=False):
-            actions = actions.view((self.num_envs, self.num_actions))
+    def unscale_act(self, action):
+        return action * self.action_strength
 
-            actions = torch.clip(actions, -1.0, 1.0)
-            self.actions = actions
+    def set_act(self, action):
+        self.state.joint_act.view(self.num_envs, -1)[:, 0:1] = action
 
-            self.state.joint_act.view(self.num_envs, -1)[:, 0:1] = (
-                actions * self.action_strength
+    
+    def static_init_func(self, env_ids):
+        joint_q = self.start_joint_q.view(self.num_envs, -1)[env_ids].clone()
+        joint_qd = self.start_joint_qd.view(self.num_envs, -1)[env_ids].clone()
+        return joint_q, joint_qd
+    
+    def stochastic_init_func(self, env_ids):
+        """Method for computing stochastic init state"""
+        joint_q, joint_qd = self.static_init_func(env_ids)
+        joint_q += np.pi * (
+            torch.rand(
+                size=(len(env_ids), self.num_joint_q), device=self.device
             )
+            - 0.5
+        )
 
-            self.state = self.integrator.forward(
-                self.model,
-                self.state,
-                self.sim_dt,
-                self.sim_substeps,
-                self.MM_caching_frequency,
+        joint_qd += 0.5 * (
+            torch.rand(
+                size=(len(env_ids), self.num_joint_qd), device=self.device
             )
-            self.sim_time += self.sim_dt
+            - 0.5
+        )
+        return joint_q, joint_qd
 
-        self.reset_buf = torch.zeros_like(self.reset_buf)
+    def set_state_act(self, obs, act):
+        self.state.joint_q.view(self.num_envs, -1)[:, 0] = obs[:, 0]
+        theta = torch.atan2(obs.view(self.num_envs, -1)[:, 2], obs.view(self.num_envs, -1)[:, 3])
+        theta = tu.normalize_angle(theta)
+        self.state.joint_q.view(self.num_envs, -1)[:, 1] = theta
+        self.state.joint_qd.view(self.num_envs, -1)[:, 0] = obs[:, 1]
+        self.state.joint_qd.view(self.num_envs, -1)[:, 1] = obs[:, 4]
+        self.state.joint_act.view(self.num_envs, -1)[:, 0] = act
 
-        self.progress_buf += 1
-        self.num_frames += 1
-
-        self.calculateObservations()
-        self.calculateReward()
-
-        if self.no_grad == False:
-            self.obs_buf_before_reset = self.obs_buf.clone()
-            self.extras = {
-                "obs_before_reset": self.obs_buf_before_reset,
-                "episode_end": self.termination_buf,
-            }
-
-        env_ids = self.reset_buf.nonzero(as_tuple=False).squeeze(-1)
-
-        # self.obs_buf_before_reset = self.obs_buf.clone()
-
-        with df.ScopedTimer("reset", active=False, detailed=False):
-            if len(env_ids) > 0:
-                self.reset(env_ids)
-
-        with df.ScopedTimer("render", active=False, detailed=False):
-            self.render()
-
-        # self.extras = {'obs_before_reset': self.obs_buf_before_reset}
-
-        return self.obs_buf, self.rew_buf, self.reset_buf, self.extras
-
-    def reset(self, env_ids=None, force_reset=True):
-        if env_ids is None:
-            if force_reset == True:
-                env_ids = torch.arange(
-                    self.num_envs, dtype=torch.long, device=self.device
-                )
-
-        if env_ids is not None:
-            # fixed start state
-            self.state.joint_q = self.state.joint_q.clone()
-            self.state.joint_qd = self.state.joint_qd.clone()
-            self.state.joint_q.view(self.num_envs, -1)[
-                env_ids, :
-            ] = self.start_joint_q.view(-1, self.num_joint_q)[env_ids, :].clone()
-            self.state.joint_qd.view(self.num_envs, -1)[
-                env_ids, :
-            ] = self.start_joint_qd.view(-1, self.num_joint_qd)[env_ids, :].clone()
-
-            if self.stochastic_init:
-                self.state.joint_q.view(self.num_envs, -1)[
-                    env_ids, :
-                ] = self.state.joint_q.view(self.num_envs, -1)[env_ids, :] + np.pi * (
-                    torch.rand(
-                        size=(len(env_ids), self.num_joint_q), device=self.device
-                    )
-                    - 0.5
-                )
-
-                self.state.joint_qd.view(self.num_envs, -1)[
-                    env_ids, :
-                ] = self.state.joint_qd.view(self.num_envs, -1)[env_ids, :] + 0.5 * (
-                    torch.rand(
-                        size=(len(env_ids), self.num_joint_qd), device=self.device
-                    )
-                    - 0.5
-                )
-
-            self.progress_buf[env_ids] = 0
-
-            self.calculateObservations()
-
-        return self.obs_buf
-
-    """
-    cut off the gradient from the current state to previous states
-    """
-
-    def clear_grad(self):
-        with torch.no_grad():  # TODO: check with Miles
-            current_joint_q = self.state.joint_q.clone()
-            current_joint_qd = self.state.joint_qd.clone()
-            current_joint_act = self.state.joint_act.clone()
-            self.state = self.model.state()
-            self.state.joint_q = current_joint_q
-            self.state.joint_qd = current_joint_qd
-            self.state.joint_act = current_joint_act
-
-    """
-    This function starts collecting a new trajectory from the current states but cut off the computation graph to the previous states.
-    It has to be called every time the algorithm starts an episode and return the observation vectors
-    """
-
-    def initialize_trajectory(self):
-        self.clear_grad()
-        self.calculateObservations()
-        return self.obs_buf
-
-    def calculateObservations(self):
-        x = self.state.joint_q.view(self.num_envs, -1)[:, 0:1]
-        theta = self.state.joint_q.view(self.num_envs, -1)[:, 1:]
-        xdot = self.state.joint_qd.view(self.num_envs, -1)[:, 0:1]
-        theta_dot = self.state.joint_qd.view(self.num_envs, -1)[:, 1:]
+    def observation_from_state(self, state):
+        x = state.joint_q.view(self.num_envs, -1)[:, 0:1]
+        theta = state.joint_q.view(self.num_envs, -1)[:, 1:]
+        xdot = state.joint_qd.view(self.num_envs, -1)[:, 0:1]
+        theta_dot = state.joint_qd.view(self.num_envs, -1)[:, 1:]
 
         # observations: [x, xdot, sin(theta), cos(theta), theta_dot]
-        self.obs_buf = torch.cat(
+        return torch.cat(
             [x, xdot, torch.sin(theta), torch.cos(theta), theta_dot], dim=-1
         )
 
-    def calculateReward(self):
-        x = self.state.joint_q.view(self.num_envs, -1)[:, 0]
-        theta = tu.normalize_angle(self.state.joint_q.view(self.num_envs, -1)[:, 1])
-        xdot = self.state.joint_qd.view(self.num_envs, -1)[:, 0]
-        theta_dot = self.state.joint_qd.view(self.num_envs, -1)[:, 1]
+    def calculate_reward(self, obs, act):
+        x = obs.view(self.num_envs, -1)[:, 0]
+        # theta = tu.normalize_angle(self.state.view(self.num_envs, -1)[:, 1])
+        theta = torch.atan2(obs.view(self.num_envs, -1)[:, 2], obs.view(self.num_envs, -1)[:, 3])
+        theta = tu.normalize_angle(theta)
+        xdot = obs.view(self.num_envs, -1)[:, 1]
+        theta_dot = obs.view(self.num_envs, -1)[:, 4]
         pole_angle_penalty = -torch.pow(theta, 2.0) * self.pole_angle_penalty
+        self.primal = pole_angle_penalty.clone()
 
-        self.rew_buf = (
+        return (
             pole_angle_penalty
             - torch.pow(theta_dot, 2.0) * self.pole_velocity_penalty
             - torch.pow(x, 2.0) * self.cart_position_penalty
             - torch.pow(xdot, 2.0) * self.cart_velocity_penalty
-            - torch.sum(self.actions**2, dim=-1) * self.cart_action_penalty
-        )
-
-        # reset agents
-        self.reset_buf = torch.where(
-            self.progress_buf > self.episode_length - 1,
-            torch.ones_like(self.reset_buf),
-            self.reset_buf,
+            - torch.sum(act**2, dim=-1) * self.cart_action_penalty
         )
