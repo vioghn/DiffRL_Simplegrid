@@ -9,11 +9,6 @@
     </inertial>
   </link>
 
-  <joint name="base_weld" type="fixed">
-    <parent link="world" />
-    <child link="base" />
-  </joint>
-
   <link name="upper_arm">
     <visual>
       <geometry>
