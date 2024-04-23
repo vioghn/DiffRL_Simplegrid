@@ -13,3 +13,4 @@ from .dflex_env import DFlexEnv
 from .hopper import HopperEnv
 from .humanoid import HumanoidEnv
 from .snu_humanoid import SNUHumanoidEnv
+from .double_pendulum import DoublePendulumEnv
