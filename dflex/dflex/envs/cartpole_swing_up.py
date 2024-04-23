@@ -1,5 +1,3 @@
-# TODO need tom finish this bad boy
-
 import math
 import os
 import sys
@@ -15,11 +13,6 @@ import dflex as df
 import numpy as np
 
 np.set_printoptions(precision=5, linewidth=256, suppress=True)
-
-try:
-    from pxr import Usd
-except ModuleNotFoundError:
-    print("No pxr package")
 
 import dflex.envs.load_utils as lu
 import dflex.envs.torch_utils as tu
