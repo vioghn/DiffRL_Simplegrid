@@ -264,7 +264,7 @@ class DFlexEnv:
 
         return self.obs_buf, rew, done, extras
 
-    def reset(self, env_ids=None, grads=False, force_reset=True):
+    def reset(self, env_ids=None, grads=False, force_reset=False):
         if grads:
             """
             This function starts collecting a new trajectory from the current states but cuts off the computation graph to the previous states.
