@@ -1,0 +1,50 @@
+name: SimpleGrid-8x8-v0
+general: 
+  device: 'cpu'
+  no_grad: true
+
+config:
+  _target_: "gym.make"
+  id: "SimpleGrid-8x8-v0"
+  render_mode: 'human'
+  
+
+# config:
+#   _target_: gym.make
+#   id: SimpleGrid-8x8-v0
+#   render_mode: ${general.render}
+#   device: ${general.device}
+#   no_grad: False
+
+# ppo:
+#   max_epochs: 50000
+#   lr: 5e-4
+#   minibatch_size: 16384
+#   num_actors: 2048
+#   horizon_length: 32
+#   save_frequency: 500
+#   save_best_after: 500
+#   actor_mlp:
+#     units: [400, 200, 100]
+
+shac:
+  actor_lr: 2e-3
+  critic_lr: 2e-3
+  max_epochs: 100
+  betas: [0.7, 0.95]
+  actor_mlp:
+    units: [128, 64, 32]
+  critic_mlp:
+    units: [64, 64]
+sac:
+  max_epochs: 5000
+  batch_size: 4096
+  num_actors: 128
+  save_frequency: 500
+  save_best_after: 500
+  actor_critic_mlp:
+    units: [128, 64, 32]
+
+svg:
+  num_train_steps: 11000000
+  replay_buffer_capacity: 1000000
