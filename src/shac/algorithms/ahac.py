@@ -34,6 +34,11 @@ from shac.utils.running_mean_std import RunningMeanStd
 from shac.utils.dataset import CriticDataset
 from shac.utils.time_report import TimeReport
 from shac.utils.average_meter import AverageMeter
+import gymnasium as gym
+from gymnasium.envs.registration import register
+from gym_simplegrid.envs import SimpleGridEnv
+import sys
+
 
 
 class AHAC:
@@ -86,18 +91,53 @@ class AHAC:
         assert critic_method in ["one-step", "td-lambda"]
         assert save_interval > 0
         assert eval_runs >= 0
+        print("hello i am in the initial part")
+ 
+        
+        # register(
+        #         id='SimpleGrid-8x8-v0',
+        #         entry_point='gymsimplegrid.gym_simplegrid.env:SimpleGridEnv',
+        #         max_episode_steps=200,
+        #         kwargs={'obstacle_map': '8x8'},
+        # )
+        print("Environment registered successfully")
 
-        # Create environment
-        self.env = instantiate(env_config, logdir=logdir)
-        print("num_envs = ", self.env.num_envs)
-        print("num_actions = ", self.env.num_actions)
-        print("num_obs = ", self.env.num_obs)
+            # Instantiate the environment
+        register(
+            id='SimpleGrid-v0',
+            entry_point='gym_simplegrid.envs:SimpleGridEnv',
+            max_episode_steps=200
+        )
 
-        self.num_envs = self.env.num_envs
-        self.num_obs = self.env.num_obs
-        self.num_actions = self.env.num_actions
-        self.max_episode_length = self.env.episode_length
-        self.device = torch.device(device)
+        register(
+            id='SimpleGrid-8x8-v0',
+            entry_point='gym_simplegrid.envs:SimpleGridEnv',
+            max_episode_steps=200,
+            kwargs={'obstacle_map': '8x8'},
+        )
+
+        register(
+            id='SimpleGrid-4x4-v0',
+            entry_point='gym_simplegrid.envs:SimpleGridEnv',
+            max_episode_steps=200,
+            kwargs={'obstacle_map': '4x4'},
+        )
+
+        self.env = gym.make('SimpleGrid-8x8-v0', render_mode='human')
+        
+
+        print('ennv is created!')
+        print(self.env.observation_space)
+      
+        # print("num_envs = ", self.env.num_envs)
+        # print("num_actions = ", self.env.num_actions)
+        # print("num_obs = ", self.env.num_obs)
+        print(self.env.observation_space.n , self.env.action_space.n)
+        self.num_envs = 1
+        self.num_obs = 64
+        self.num_actions = 4
+        self.max_episode_length = 200
+        self.device = torch.device('cpu')
 
         self.steps_min = steps_min
         self.steps_max = steps_max
@@ -138,7 +178,7 @@ class AHAC:
             self.log_dir = logdir
             os.makedirs(self.log_dir, exist_ok=True)
             self.writer = SummaryWriter(os.path.join(self.log_dir, "log"))
-
+        print("actor part !!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!!")
         # Create actor and critic
         self.actor = instantiate(
             actor_config,
@@ -146,6 +186,7 @@ class AHAC:
             action_dim=self.num_actions,
             device=self.device,
         )
+        print("actoe dict", actor_config)
 
         self.critic = instantiate(
             critic_config,
@@ -239,6 +280,30 @@ class AHAC:
     @property
     def steps_num(self):
         return round(self.H.item())
+    
+
+    def one_hot_encode(self, obs, num_classes):
+        return torch.nn.functional.one_hot(torch.tensor(obs, dtype=torch.int64), num_classes=num_classes).float()
+    
+    def map_continuous_to_discrete(self,action, action_space):
+    # Assuming action_space is a gym.spaces.Discrete object
+    # Map continuous action to discrete action
+    # This is a simple example that can be modified as needed
+    # You might want to use a more sophisticated mapping
+        if isinstance(action_space, gym.spaces.Discrete):
+            discrete_action = int(torch.argmax(action))
+            return discrete_action
+        else:
+            raise NotImplementedError("Action space mapping for non-discrete spaces is not implemented.")
+    # def map_continuous_to_discrete(self, action, action_space):
+    #     if isinstance(action_space, gym.spaces.Discrete):
+    #         # Map continuous action to discrete action
+    #         # Example: Divide the range into equal bins
+    #         bins = torch.linspace(-1, 1, action_space.n + 1)
+    #         discrete_action = torch.bucketize(torch.tanh(action), bins) - 1
+    #         return discrete_action.item()
+        # else:
+        #     raise NotImplementedError("Action space mapping for non-discrete spaces is not implemented.")
 
     def compute_actor_loss(self, deterministic=False):
         rew_acc = torch.zeros(
@@ -258,44 +323,82 @@ class AHAC:
             if self.ret_rms is not None:
                 ret_var = self.ret_rms.var.clone()
 
-        # initialize trajectory to cut off gradients between episodes.
-        obs = self.env.initialize_trajectory()
+        # Initialize trajectory to cut off gradients between episodes.
+        obs, _ = self.env.reset()
+        obs = self.one_hot_encode(obs, self.num_obs).to(self.device)
+        # if not isinstance(obs, torch.Tensor):
+        #     obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
+
+        # # Ensure the observation has at least one dimension
+        # if obs.dim() == 0:
+        #     obs = obs.unsqueeze(0)
+            
+        # # Make sure obs is at least 2D
+        # if obs.dim() == 1:
+        #     obs = obs.unsqueeze(0)
+
         if self.obs_rms is not None:
-            # update obs rms
+            # Update obs rms
             with torch.no_grad():
                 self.obs_rms.update(obs)
-            # normalize the current obs
+            # Normalize the current obs
             obs = obs_rms.normalize(obs)
 
-        # keeps track of the current length of the rollout
+        # Keeps track of the current length of the rollout
         rollout_len = torch.zeros((self.num_envs,), device=self.device)
         # Start short horizon rollout
         for i in range(self.steps_num):
-            # collect data for critic training
+            # Collect data for critic training
             with torch.no_grad():
                 self.obs_buf[i] = obs.clone()
 
-            # act in environment
+            # Act in environment
             actions = self.actor(obs, deterministic=deterministic)
-            obs, rew, done, info = self.env.step(torch.tanh(actions))
-            term = info["termination"]
-            trunc = info["truncation"]
+            # print(actions, "the action tensor , .......................")
+            discrete_actions = self.map_continuous_to_discrete(actions, self.env.action_space) 
+            # print(discrete_actions, "the choosed one :), .......................")
+            # # actions = torch.tanh(actions)
+            # # discrete_actions = [int(a.item()) for a in actions]
+            # discrete_actions = int(torch.tanh(actions).item())
+            obs, rew, terminated, truncated, info = self.env.step(discrete_actions) 
+            if not isinstance(terminated, torch.Tensor):
+                terminated = torch.tensor(terminated, dtype=torch.bool, device=self.device)
+            if not isinstance(truncated, torch.Tensor):
+                truncated = torch.tensor(truncated, dtype=torch.bool, device=self.device)
+            done = terminated or truncated
+            # print(done, "Done tensor?")
+            term = terminated
+            trunc = truncated
+            # Convert reward to tensor if it's not already
+            if not isinstance(rew, torch.Tensor):
+                rew = torch.tensor(rew, dtype=torch.float32, device=self.device)
 
             with torch.no_grad():
                 raw_rew = rew.clone()
 
-            # scale the reward
-            rew = rew * self.rew_scale
+            # Scale the reward
+            rew = rew * self.rew_scale 
+            # print(obs,'obs raw....')
+            # if not isinstance(obs, torch.Tensor):
+            #     obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
+
+            # if obs.dim() == 0:
+            #     obs = obs.unsqueeze(0)
+                
+            # if obs.dim() == 1:
+            #     obs = obs.unsqueeze(0)
+            # print(obs, 'obs after tensoring')
+            obs = self.one_hot_encode(obs, self.num_obs).to(self.device)
 
             if self.obs_rms is not None:
-                # update obs rms
+                # Update obs rms
                 with torch.no_grad():
                     self.obs_rms.update(obs)
-                # normalize the current obs
+                # Normalize the current obs
                 obs = obs_rms.normalize(obs)
 
             if self.ret_rms is not None:
-                # update ret rms
+                # Update ret rms
                 with torch.no_grad():
                     self.ret = self.ret * self.gamma + rew
                     self.ret_rms.update(self.ret)
@@ -305,62 +408,38 @@ class AHAC:
             self.episode_length += 1
             rollout_len += 1
 
-            # contact truncation
-            # defaults to jacobian truncation if they are available, otherwise
-            # uses contact forces since they are always available
-            cfs = info["contact_forces"]
-            acc = info["accelerations"]
-            acc[acc >= 0] = torch.maximum(acc[acc>=0], torch.ones_like(acc[acc>=0]))
-            acc[acc < 0] = torch.maximum(acc[acc<0], torch.ones_like(acc[acc<0]))
-            # cfs_normalised = torch.where(acc != 0.0, cfs / acc, torch.zeros_like(cfs))
-            cfs_normalised = cfs / acc
-            self.cfs[i] = torch.norm(cfs_normalised, dim=(1, 2))
-
-            if self.log_jacobians:
-                jac_norm = (
-                    np.linalg.norm(info["jacobian"]) if "jacobian" in info else None
-                )
-                k = self.step_count + int(torch.sum(rollout_len).item())
-                if jac_norm:
-                    self.writer.add_scalar("jacobian", jac_norm, k)
-                self.writer.add_scalar("contact_forces", cfs_normalised, k)
-
-            real_obs = info["obs_before_reset"]
-            # sanity check
-            if (~torch.isfinite(real_obs)).sum() > 0:
-                print_warning("Got inf obs")
-                # raise ValueError # it's ok to have this for humanoid
+            # Handle environment-specific information
+            real_obs = obs.clone()
 
             if self.obs_rms is not None:
                 real_obs = obs_rms.normalize(real_obs)
 
             next_values[i + 1] = self.critic(real_obs).squeeze(-1)
+            
 
-            # handle terminated environments which stopped for some bad reason
-            # since the reason is bad we set their value to 0
+            # Handle case where `term` is not None
             term_env_ids = term.nonzero(as_tuple=False).squeeze(-1)
             for id in term_env_ids:
                 next_values[i + 1, id] = 0.0
 
-            # sanity check
             if (next_values > 1e6).sum() > 0 or (next_values < -1e6).sum() > 0:
                 print_error("next value error")
                 raise ValueError
 
             rew_acc[i + 1, :] = rew_acc[i, :] + gamma * rew
 
-            self.early_terms.append(torch.all(term).item())
+            self.early_terms.append(torch.all(term).item() if term is not None else False)
             self.horizon_truncs.append(i == self.steps_num - 1)
-            self.episode_ends.append(torch.all(trunc).item())
+            self.episode_ends.append(torch.all(trunc).item() if trunc is not None else False)
 
-            done = term | trunc
-            done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
-
-            self.early_termination += torch.sum(term).item()
-            self.episode_end += torch.sum(trunc).item()
+            # done = term or trunc if term is not None and trunc is not None else False
+            done_env_ids = [0] if done else [] if done is not None else []
+            # done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
+            # print(done_env_ids, "Done tensor what are you?")
+            self.early_termination += torch.sum(term).item() if term is not None else 0
+            self.episode_end += torch.sum(trunc).item() if trunc is not None else 0
 
             if i < self.steps_num - 1:
-                # first terminate all rollouts which are 'done'
                 retrn = (
                     -rew_acc[i + 1, done_env_ids]
                     - self.gamma
@@ -371,29 +450,30 @@ class AHAC:
                 with torch.no_grad():
                     self.ret[done_env_ids] += retrn
             else:
-                # terminate all envs because we reached the end of our rollout
                 retrn = -rew_acc[i + 1, :] - self.gamma * gamma * next_values[i + 1, :]
                 actor_loss += retrn.sum()
                 with torch.no_grad():
                     self.ret += retrn
 
-            # compute gamma for next step
             gamma = gamma * self.gamma
 
-            # clear up gamma and rew_acc for done envs
             gamma[done_env_ids] = 1.0
             rew_acc[i + 1, done_env_ids] = 0.0
 
-            # collect data for critic training
             with torch.no_grad():
                 self.rew_buf[i] = rew.clone()
                 if i < self.steps_num - 1:
-                    self.done_mask[i] = done.clone().to(torch.float32)
+                    if isinstance(done, torch.Tensor):
+                        self.done_mask[i] = done.clone().to(torch.float32)
+                    else:
+                        self.done_mask[i] = torch.tensor(0.0, dtype=torch.float32, device=self.device)
                 else:
-                    self.done_mask[i, :] = 1.0
+                    if isinstance(done, torch.Tensor):
+                        self.done_mask[i, :] = 1.0
+                    else:
+                        self.done_mask[i, :] = torch.tensor(1.0, dtype=torch.float32, device=self.device)
                 self.next_values[i] = next_values[i + 1].clone()
 
-            # collect episode loss
             with torch.no_grad():
                 self.episode_loss -= raw_rew
                 self.episode_discounted_loss -= self.episode_gamma * raw_rew
@@ -442,7 +522,6 @@ class AHAC:
         ):
             np.savez(
                 os.path.join(self.log_dir, f"truncation_analysis_{self.episode}"),
-                contact_forces=self.cfs,
                 early_termination=self.early_terms,
                 horizon_truncation=self.horizon_truncs,
                 episode_ends=self.episode_ends,
@@ -455,11 +534,16 @@ class AHAC:
 
         return actor_loss
 
+
+
+
     @torch.no_grad()
+   
     def evaluate_policy(self, num_games, deterministic=False):
         episode_length_his = []
         episode_loss_his = []
         episode_discounted_loss_his = []
+        
         episode_loss = torch.zeros(
             self.num_envs, dtype=torch.float32, device=self.device
         )
@@ -471,25 +555,71 @@ class AHAC:
             self.num_envs, dtype=torch.float32, device=self.device
         )
 
-        obs = self.env.reset()
+        obs, _ = self.env.reset()
+        obs = self.one_hot_encode(obs, self.num_obs).to(self.device)
+
+        
+        # if not isinstance(obs, torch.Tensor):
+        #     obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
+       
+        # Ensure the observation has at least one dimension
+        # if obs.dim() == 0:
+        #     obs = obs.unsqueeze(0)
+
+        # # Make sure obs is at least 2D
+        # if obs.dim() == 1:
+        #     obs = obs.unsqueeze(0)
 
         games_cnt = 0
+        
         while games_cnt < num_games:
+          
             if self.obs_rms is not None:
+               
                 obs = self.obs_rms.normalize(obs)
 
+          
             actions = self.actor(obs, deterministic=deterministic)
+            discrete_actions = self.map_continuous_to_discrete(actions, self.env.action_space)
+            # actions = torch.tanh(actions)
+            # discrete_actions = [int(a.item()) for a in actions]
+           
+            obs, rew, terminated, truncated, _ = self.env.step(discrete_actions)
+           
+            # Ensure obs is a tensor
+            if not isinstance(obs, torch.Tensor):
+                obs = torch.tensor(obs, dtype=torch.float32, device=self.device)
 
-            obs, rew, done, _ = self.env.step(torch.tanh(actions))
+            # Ensure obs has at least one dimension
+            if obs.dim() == 0:
+                obs = obs.unsqueeze(0) 
+           
+
+            # Make sure obs is at least 2D
+            if obs.dim() == 1:
+                obs = obs.unsqueeze(0)
+            
+
+            # Convert terminated and truncated to tensors
+            if not isinstance(terminated, torch.Tensor):
+                terminated = torch.tensor(terminated, dtype=torch.bool, device=self.device)
+            if not isinstance(truncated, torch.Tensor):
+                truncated = torch.tensor(truncated, dtype=torch.bool, device=self.device)
+
+            done = terminated | truncated
 
             episode_length += 1
 
-            done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
-
+            # done_env_ids = done.nonzero(as_tuple=False).squeeze(-1)
+            done_env_ids = [0] if done else [] if done is not None else []
             episode_loss -= rew
             episode_discounted_loss -= episode_gamma * rew
             episode_gamma *= self.gamma
+            # cnt+=1
+            # print(len(done_env_ids) , 'done termination')
             if len(done_env_ids) > 0:
+                print(f'episode length , {episode_length}')
+                # print(f'the target is found in . Exploration count: {games_cnt + 1}')
                 for done_env_id in done_env_ids:
                     print(
                         "loss = {:.2f}, len = {}".format(
@@ -507,12 +637,15 @@ class AHAC:
                     episode_length[done_env_id] = 0
                     episode_gamma[done_env_id] = 1.0
                     games_cnt += 1
-
+            if (done == True): 
+                print(f"the end {cnt}")
+               
         mean_episode_length = np.mean(np.array(episode_length_his))
         mean_policy_loss = np.mean(np.array(episode_loss_his))
         mean_policy_discounted_loss = np.mean(np.array(episode_discounted_loss_his))
 
         return mean_policy_loss, mean_policy_discounted_loss, mean_episode_length
+
 
     @torch.no_grad()
     def compute_target_values(self):
@@ -549,7 +682,7 @@ class AHAC:
         return critic_loss
 
     def initialize_env(self):
-        self.env.clear_grad()
+        # self.env.clear_grad()
         self.env.reset()
 
     @torch.no_grad()
@@ -596,6 +729,18 @@ class AHAC:
             self.num_envs, dtype=torch.float32, device=self.device
         )
 
+
+        def grad_norm(params):
+            grad_norm = 0.0
+            for p in params:
+                if p.grad is not None:
+                    torch.tensor(grad_norm)
+                    grad_norm += torch.sum(torch.tensor(p.grad)**2)
+                # else: 
+                    # print('it is none :)))))))))))))))))))))))))))) ')
+            return torch.sqrt(torch.tensor(grad_norm))
+
+        
         def actor_closure():
             self.actor_optimizer.zero_grad()
 
@@ -610,10 +755,11 @@ class AHAC:
             self.time_report.end_timer("backward simulation")
 
             with torch.no_grad():
-                self.grad_norm_before_clip = tu.grad_norm(self.actor.parameters())
+                #the grads are zero? 
+                self.grad_norm_before_clip = grad_norm(self.actor.parameters())
                 if self.grad_norm:
                     clip_grad_norm_(self.actor.parameters(), self.grad_norm)
-                self.grad_norm_after_clip = tu.grad_norm(self.actor.parameters())
+                self.grad_norm_after_clip = grad_norm(self.actor.parameters())
 
                 # sanity check
                 if (
