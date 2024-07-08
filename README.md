@@ -2,4 +2,7 @@ This project aims to enhance the Adaptive Horizon Actor-Critic (AHAC) algorithm 
 
 #### Training and Evaluation: 
 Users can run the algorithm using the following command:<br>
-```python train.py alg=ahac env=simplegrid```
+```python train.py alg=ahac env=simplegrid``` <br> 
+#### references 
+ simple_grid project link : https://github.com/damat-le/gym-simplegrid 
+ahac: https://adaptive-horizon-actor-critic.github.io/
