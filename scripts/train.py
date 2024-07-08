@@ -13,6 +13,10 @@ from gym import wrappers
 from rl_games.torch_runner import Runner
 from rl_games.common import env_configurations, vecenv
 from omegaconf import OmegaConf, open_dict
+import gymnasium as gym
+from gym.envs.registration import register
+import gym_simplegrid
+
 
 try:
     from svg.train import Workspace
@@ -21,10 +25,23 @@ except:
 
 # enables ipdb when script crashes
 sys.excepthook = ultratb.FormattedTB(mode="Plain", color_scheme="Neutral", call_pdb=1)
-
-
-
-
+register(
+    id='SimpleGrid-v0',
+    entry_point='gym_simplegrid.envs:SimpleGridEnv',
+    max_episode_steps=200
+)
+register(
+    id='SimpleGrid-8x8-v0',
+    entry_point='gym_simplegrid.envs:SimpleGridEnv',
+    max_episode_steps=200,
+    kwargs={'obstacle_map': '8x8'},
+)
+register(
+    id='SimpleGrid-4x4-v0',
+    entry_point='gym_simplegrid.envs:SimpleGridEnv',
+    max_episode_steps=200,
+    kwargs={'obstacle_map': '4x4'},
+)
 def register_envs(env_config):
     def create_dflex_env(**kwargs):
         # create env without grads since PPO doesn't need them
@@ -131,7 +148,7 @@ def train(cfg: DictConfig):
     seeding(cfg.general.seed)
 
     if "_target_" in cfg.alg:
-        cfg.env.config.no_grad = not cfg.general.train
+        cfg.env.general.no_grad = not cfg.general.train
 
         algo = instantiate(cfg.alg, env_config=cfg.env.config, logdir=logdir)
 
